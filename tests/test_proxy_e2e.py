@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from typing import Any
 
 import pytest
-import requests  # type: ignore[import-untyped]
+import requests
 
 PROXY_BASE_URL = "http://127.0.0.1:6385"
 
@@ -94,7 +95,7 @@ def test_savings_accumulation_on_cache_hit(proxy_available: bool) -> None:
     unique_id = uuid.uuid4().hex[:8]
     prompt = f"What is the capital of planet Neptune {unique_id}?"
     model_name = f"gpt-4o-savings-{unique_id}"
-    payload = {
+    payload: dict[str, Any] = {
         "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
@@ -144,7 +145,7 @@ def test_embeddings_endpoint(proxy_available: bool) -> None:
     if not proxy_available:
         pytest.skip("kachedb-proxy not running on 6385")
 
-    payload = {
+    payload: dict[str, Any] = {
         "input": "How does KacheDB implement SIMD cosine distance in Rust?",
         "model": "bge-small-en-v1.5",
     }
@@ -164,7 +165,7 @@ def test_chat_completions_semantic_cache_hit_cycle(proxy_available: bool) -> Non
 
     session = requests.Session()
     unique_query = f"Explain memory arenas in database systems {time.time()}"
-    payload = {
+    payload: dict[str, Any] = {
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": unique_query}],
         "stream": False,
@@ -208,7 +209,7 @@ def test_tier1_exact_cache_short_circuit(proxy_available: bool) -> None:
     u = uuid.uuid4().hex[:6]
     model = f"qwen-exact-{u}"
     prompt = f"Compute 123 + 456 for test {u}"
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
@@ -250,7 +251,7 @@ def test_multi_model_namespace_isolation(proxy_available: bool) -> None:
     prompt = f"What is the meaning of life? Test id {u}"
 
     # Query with model A -> MUST be MISS
-    payload_a = {
+    payload_a: dict[str, Any] = {
         "model": model_a,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -263,7 +264,7 @@ def test_multi_model_namespace_isolation(proxy_available: bool) -> None:
     time.sleep(0.3)
 
     # Same prompt with model B -> MUST be MISS (isolated namespace)
-    payload_b = {
+    payload_b: dict[str, Any] = {
         "model": model_b,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -293,7 +294,7 @@ def test_dynamic_threshold_override(proxy_available: bool) -> None:
     prompt1 = f"What is the atomic number of Helium? Unique: {tag}. One word."
     prompt2 = f"What is Helium's atomic number? Unique: {tag}. One word."
 
-    payload1 = {
+    payload1: dict[str, Any] = {
         "model": "qwen2.5",
         "messages": [{"role": "user", "content": prompt1}],
     }
@@ -305,7 +306,7 @@ def test_dynamic_threshold_override(proxy_available: bool) -> None:
     time.sleep(0.3)
 
     # Query with strict threshold (0.999) via modern KacheDB-Threshold header
-    payload2 = {
+    payload2: dict[str, Any] = {
         "model": "qwen2.5",
         "messages": [{"role": "user", "content": prompt2}],
     }
@@ -323,7 +324,7 @@ def test_streaming_chat_completions(proxy_available: bool) -> None:
     if not proxy_available:
         pytest.skip("kachedb-proxy not running on 6385")
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Tell me a 1-sentence joke."}],
         "stream": True,
@@ -380,7 +381,7 @@ def test_anthropic_messages_non_streaming_cycle(proxy_available: bool) -> None:
     prompt = f"Explain the concept of memory arenas in systems software {unique_id}"
     model = f"claude-3-5-sonnet-anthropic-{unique_id}"
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 512,
@@ -442,7 +443,7 @@ def test_anthropic_messages_streaming_cycle(proxy_available: bool) -> None:
     prompt = f"Give 3 short bullet points about kernel bypass networking {unique_id}"
     model = f"claude-3-5-sonnet-stream-{unique_id}"
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 512,
@@ -467,11 +468,7 @@ def test_anthropic_messages_streaming_cycle(proxy_available: bool) -> None:
             continue
         decoded = line.decode("utf-8")
         if decoded.startswith("event:"):
-            events_seen.append(
-                decoded[6:].trim()
-                if hasattr(decoded[6:], "trim")
-                else decoded[6:].strip()
-            )
+            events_seen.append(decoded[6:].strip())
         elif decoded.startswith("data:"):
             raw_data = decoded[5:].strip()
             try:
@@ -532,7 +529,7 @@ def test_anthropic_messages_system_prompt_and_blocks(proxy_available: bool) -> N
     unique_id = uuid.uuid4().hex[:8]
     model = f"claude-3-5-sonnet-sys-{unique_id}"
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "system": [{"type": "text", "text": "You are a concise mathematician."}],
         "messages": [
