@@ -1,0 +1,35 @@
+# Build and OS artifacts
+target/
+**/target/
+.git/
+.DS_Store
+Thumbs.db
+
+# Python & Linter caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+lcov.info
+
+# Local models & large binaries
+models/
+.fastembed_cache/
+*.onnx
+*.gguf
+*.bin
+
+# Environment & Secrets
+.env
+*.env
+.env.*
+
+# Logs
+*.log
+

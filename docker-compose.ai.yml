@@ -1,0 +1,90 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚡ KacheDB AI Semantic Gateway: Multi-Container Stack (v0.1.0-alpha)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Starts KacheDB in-memory memory engine and kachedb-proxy on port 6385.
+#
+# Quickstart (Default: Upstream OpenAI):
+#   export OPENAI_API_KEY="sk-..."
+#   docker compose -f docker-compose.ai.yml up -d
+#
+# Zero-Cost 100% Offline Mode (With Local Llama.cpp):
+#   docker compose -f docker-compose.ai.yml --profile local-llm up -d
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Tier 1 & 2 Vector Storage Engine ────────────────────────────────────────
+  kachedb:
+    image: ghcr.io/vubon/kachedb:latest
+    container_name: kachedb-server
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | nc -w 1 127.0.0.1 6379 | grep -q PONG || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
+    networks:
+      - kachedb-network
+
+  # ── AI Semantic Reverse Proxy Gateway ────────────────────────────────────────
+  kachedb-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/vubon/kachedb-proxy:0.1.0-alpha
+    container_name: kachedb-proxy
+    restart: unless-stopped
+    ports:
+      - "6385:6385"
+    environment:
+      - KACHEDB_PROXY_PORT=6385
+      - KACHEDB_PROXY_HOST=0.0.0.0
+      - KACHEDB_HOST=kachedb
+      - KACHEDB_PORT=6379
+      - UPSTREAM_BASE_URL=${UPSTREAM_BASE_URL:-${UPSTREAM_URL:-https://api.openai.com/v1}}
+      - UPSTREAM_URL=${UPSTREAM_URL:-https://api.openai.com/v1}
+      - UPSTREAM_API_KEY=${OPENAI_API_KEY:-}
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD:-0.85}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-86400}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-bge-small}
+      - RUST_LOG=info
+    depends_on:
+      kachedb:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:6385/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - kachedb-network
+
+  # ── Optional: Local Llama.cpp Server (Zero-Cost Offline Profile) ──────────────
+  llama-server:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    container_name: kachedb-local-llama
+    restart: unless-stopped
+    profiles:
+      - local-llm
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../models:/models:ro
+    command: >
+      -m /models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+      --host 0.0.0.0
+      --port 8081
+      -c 2048
+      -ngl 99
+    networks:
+      - kachedb-network
+
+networks:
+  kachedb-network:
+    driver: bridge
+

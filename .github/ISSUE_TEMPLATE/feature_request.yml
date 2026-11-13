@@ -1,0 +1,28 @@
+name: 💡 Feature Request
+description: Propose a new feature, LLM upstream integration, or proxy optimization
+title: "[FEATURE]: "
+labels: ["enhancement", "proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea to make **`kachedb-proxy`** faster or support more AI developer workflows?
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Workflow Gap
+      description: Is your feature request related to a specific IDE (Cursor, Aider, Windsurf) or framework (LangChain, LiteLLM)?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like to see.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've evaluated.

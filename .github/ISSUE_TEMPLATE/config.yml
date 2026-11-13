@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/vubon/kachedb/discussions
+    about: Ask questions, share IDE setups, and discuss performance optimizations.
+  - name: 📖 Documentation & Architecture
+    url: https://github.com/vubon/kachedb/tree/main/kachedb-proxy
+    about: View setup guides for Cursor, Aider, LiteLLM, and OpenAI SDK.
