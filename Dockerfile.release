@@ -1,0 +1,31 @@
+# Lightweight release runtime image packaging pre-compiled multi-arch binaries
+FROM debian:bookworm-slim
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3 \
+    libstdc++6 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN useradd -r -m -u 10001 kache && \
+    mkdir -p /app/.fastembed_cache && \
+    chown -R kache:kache /app
+
+# Copy the pre-compiled native binary matching the target architecture (amd64 or arm64)
+COPY bin/${TARGETARCH}/kachedb-proxy /usr/local/bin/kachedb-proxy
+RUN chmod +x /usr/local/bin/kachedb-proxy
+
+USER kache
+
+ENV KACHEDB_CACHE_DIR=/app/.fastembed_cache
+ENV RUST_LOG=info
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/kachedb-proxy"]
+CMD ["--bind", "0.0.0.0:8080"]
