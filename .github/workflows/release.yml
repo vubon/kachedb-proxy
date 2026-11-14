@@ -8,6 +8,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-binaries:
     name: Build Binary (${{ matrix.target }})
@@ -27,7 +31,7 @@ jobs:
             artifact_name: kachedb-proxy
             asset_name: kachedb-proxy-aarch64-linux.tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             artifact_name: kachedb-proxy
             asset_name: kachedb-proxy-x86_64-darwin.tar.gz
           - target: aarch64-apple-darwin
@@ -46,8 +50,13 @@ jobs:
       - name: Install cross-compilation tools (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
 
       - name: Build Release Binary
         run: cargo build --release --target ${{ matrix.target }}

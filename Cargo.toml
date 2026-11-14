@@ -24,7 +24,7 @@ async-stream = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # Local Vector Embeddings (ONNX Runtime)
-fastembed = { version = "4.9", features = ["ort-download-binaries"] }
+fastembed = { version = "4.9", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
 
 # Serialization & CLI
 serde = { version = "1.0", features = ["derive"] }
