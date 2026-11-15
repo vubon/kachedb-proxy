@@ -6,6 +6,8 @@
 
 use crate::cache::DynKacheDbClient;
 use crate::cache::canonicalizer::{canonicalize_anthropic_prompt, sanitize_model_name};
+use crate::embed::gemma::DEFAULT_MAX_TOKENS as MAX_SEQUENCE_TOKENS;
+use crate::embed::task::{EmbeddingTask, PREFIX_SEARCH_QUERY};
 use crate::error::ProxyError;
 use crate::http::sse::{
     extract_anthropic_sse_delta, extract_sse_delta, generate_cached_anthropic_sse_stream,
@@ -134,6 +136,15 @@ pub async fn messages_handler(
     {
         canonical_prompt.push_str(&format!("\n[tools:{tools}]"));
     }
+
+    // Enforce 8,192-token context window guard before cache/upstream operations
+    let token_count = canonical_prompt.split_whitespace().count();
+    if token_count > MAX_SEQUENCE_TOKENS {
+        return Err(ProxyError::InvalidRequest(format!(
+            "Prompt exceeds maximum sequence length of {MAX_SEQUENCE_TOKENS} tokens (got {token_count})"
+        )));
+    }
+
     let prompt_hash = xxh3_64(canonical_prompt.trim().to_lowercase().as_bytes());
     let exact_key = format!("exact_chat:{}:{:016x}", sanitized_model, prompt_hash);
     let index_name = format!("chat_cache:{}", sanitized_model);
@@ -175,6 +186,8 @@ pub async fn messages_handler(
             "EXACT",
             "1-Exact",
             "1.000",
+            0.0,
+            0.0,
             elapsed_us / 1000.0,
         ));
     }
@@ -182,7 +195,10 @@ pub async fn messages_handler(
     // =========================================================================
     // Tier 2: SIMD Vector Cosine Semantic Search (< 5 ms)
     // =========================================================================
-    let prompt_vec = state.embedder.encode(&canonical_prompt)?;
+    let embed_t0 = Instant::now();
+    let prompt_vec = encode_search_query(&state, &canonical_prompt)?;
+    let embed_elapsed_ms = embed_t0.elapsed().as_secs_f64() * 1000.0;
+
     let cache_hit = state
         .kachedb
         .vsearch(&index_name, &prompt_vec, 1, effective_threshold)
@@ -218,6 +234,7 @@ pub async fn messages_handler(
         });
 
         let score_str = format!("{:.3}", hit.score);
+        let distance = (1.0 - hit.score).max(0.0);
         return Ok(build_cached_anthropic_response(
             model,
             hit.payload,
@@ -227,6 +244,8 @@ pub async fn messages_handler(
             "SEMANTIC",
             "2-Semantic",
             &score_str,
+            distance,
+            embed_elapsed_ms,
             elapsed_us / 1000.0,
         ));
     }
@@ -305,9 +324,7 @@ pub async fn messages_handler(
             }
 
             let mut response = (StatusCode::OK, Json(resp_json)).into_response();
-            response
-                .headers_mut()
-                .insert("KacheDB-Cache", HeaderValue::from_static("MISS"));
+            inject_miss_headers(&mut response, embed_elapsed_ms, elapsed_us / 1000.0);
             return Ok(response);
         } else {
             let elapsed_us = t0.elapsed().as_micros() as f64;
@@ -374,14 +391,26 @@ pub async fn messages_handler(
                 }
             };
 
-            let response = axum::response::Response::builder()
+            let mut builder = axum::response::Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/event-stream")
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
                 .header("KacheDB-Cache", "MISS")
+                .header("Kache-Hit", "false")
+                .header("Kache-Distance", "1.0000");
+            if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", embed_elapsed_ms)) {
+                builder = builder.header("Kache-Embedding-Time-Ms", val);
+            }
+            if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", elapsed_us / 1000.0)) {
+                builder = builder.header("KacheDB-Latency-Ms", val);
+            }
+
+            let response = builder
                 .body(axum::body::Body::from_stream(output_stream))
-                .unwrap();
+                .map_err(|e| {
+                    ProxyError::Internal(format!("Failed to build Anthropic SSE response: {e}"))
+                })?;
 
             return Ok(response);
         }
@@ -501,13 +530,7 @@ pub async fn messages_handler(
         });
 
         let mut response = (StatusCode::OK, Json(anthropic_resp)).into_response();
-        let elapsed_ms = elapsed_us / 1000.0;
-        response
-            .headers_mut()
-            .insert("KacheDB-Cache", HeaderValue::from_static("MISS"));
-        if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", elapsed_ms)) {
-            response.headers_mut().insert("KacheDB-Latency-Ms", val);
-        }
+        inject_miss_headers(&mut response, embed_elapsed_ms, elapsed_us / 1000.0);
         return Ok(response);
     }
 
@@ -614,13 +637,34 @@ pub async fn messages_handler(
     };
 
     let mut response = Sse::new(output_stream).into_response();
-    response
-        .headers_mut()
-        .insert("KacheDB-Cache", HeaderValue::from_static("MISS"));
-    if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", elapsed_ms)) {
-        response.headers_mut().insert("KacheDB-Latency-Ms", val);
-    }
+    inject_miss_headers(&mut response, embed_elapsed_ms, elapsed_ms);
     Ok(response)
+}
+
+fn encode_search_query(state: &AppState, canonical_prompt: &str) -> Result<Vec<f32>, ProxyError> {
+    if state.config.search_prefix == PREFIX_SEARCH_QUERY {
+        state
+            .embedder
+            .encode_with_task(canonical_prompt, EmbeddingTask::SearchQuery)
+    } else if canonical_prompt.starts_with(&state.config.search_prefix) {
+        state.embedder.encode(canonical_prompt)
+    } else {
+        let prefixed = format!("{}{}", state.config.search_prefix, canonical_prompt);
+        state.embedder.encode(&prefixed)
+    }
+}
+
+fn inject_miss_headers(response: &mut Response, embed_elapsed_ms: f64, latency_ms: f64) {
+    let headers = response.headers_mut();
+    headers.insert("KacheDB-Cache", HeaderValue::from_static("MISS"));
+    headers.insert("Kache-Hit", HeaderValue::from_static("false"));
+    headers.insert("Kache-Distance", HeaderValue::from_static("1.0000"));
+    if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", embed_elapsed_ms)) {
+        headers.insert("Kache-Embedding-Time-Ms", val);
+    }
+    if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", latency_ms)) {
+        headers.insert("KacheDB-Latency-Ms", val);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -633,6 +677,8 @@ fn build_cached_anthropic_response(
     match_type: &'static str,
     tier: &'static str,
     score: &str,
+    distance: f32,
+    embed_elapsed_ms: f64,
     elapsed_ms: f64,
 ) -> Response {
     let mut response = if stream {
@@ -665,25 +711,37 @@ fn build_cached_anthropic_response(
         match_type,
         tier,
         score,
+        distance,
+        embed_elapsed_ms,
         Some(elapsed_ms),
     );
     response
 }
 
+#[allow(clippy::too_many_arguments)]
 fn inject_cache_headers(
     response: &mut Response,
     cache: &'static str,
     match_type: &'static str,
     tier: &'static str,
     score: &str,
+    distance: f32,
+    embed_elapsed_ms: f64,
     latency_ms: Option<f64>,
 ) {
     let headers = response.headers_mut();
     headers.insert("KacheDB-Cache", HeaderValue::from_static(cache));
     headers.insert("KacheDB-Match", HeaderValue::from_static(match_type));
     headers.insert("KacheDB-Tier", HeaderValue::from_static(tier));
+    headers.insert("Kache-Hit", HeaderValue::from_static("true"));
     if let Ok(val) = HeaderValue::from_str(score) {
         headers.insert("KacheDB-Score", val);
+    }
+    if let Ok(val) = HeaderValue::from_str(&format!("{:.4}", distance)) {
+        headers.insert("Kache-Distance", val);
+    }
+    if let Ok(val) = HeaderValue::from_str(&format!("{:.2}", embed_elapsed_ms)) {
+        headers.insert("Kache-Embedding-Time-Ms", val);
     }
     if let Some(lat) = latency_ms
         && let Ok(val) = HeaderValue::from_str(&format!("{:.2}", lat))
@@ -898,6 +956,7 @@ mod tests {
             ttl_seconds: 3600,
             embedding_model: "bge-small".to_string(),
             mock_embedder: true,
+            ..Config::default()
         };
         AppState {
             config: Arc::new(config),
@@ -939,6 +998,12 @@ mod tests {
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "HIT");
         assert_eq!(res.headers().get("KacheDB-Match").unwrap(), "EXACT");
         assert_eq!(res.headers().get("KacheDB-Tier").unwrap(), "1-Exact");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "true");
+        assert_eq!(res.headers().get("Kache-Distance").unwrap(), "0.0000");
+        assert_eq!(
+            res.headers().get("Kache-Embedding-Time-Ms").unwrap(),
+            "0.00"
+        );
     }
 
     #[tokio::test]
@@ -967,6 +1032,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "HIT");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "true");
     }
 
     #[tokio::test]
@@ -1008,6 +1074,9 @@ mod tests {
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "HIT");
         assert_eq!(res.headers().get("KacheDB-Match").unwrap(), "SEMANTIC");
         assert_eq!(res.headers().get("KacheDB-Tier").unwrap(), "2-Semantic");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "true");
+        assert_eq!(res.headers().get("Kache-Distance").unwrap(), "0.0590");
+        assert!(res.headers().get("Kache-Embedding-Time-Ms").is_some());
 
         // Now test streaming tier 2
         let mut stream_payload = payload;
@@ -1017,6 +1086,7 @@ mod tests {
             .unwrap();
         assert_eq!(res_stream.status(), StatusCode::OK);
         assert_eq!(res_stream.headers().get("KacheDB-Cache").unwrap(), "HIT");
+        assert_eq!(res_stream.headers().get("Kache-Hit").unwrap(), "true");
     }
 
     #[tokio::test]
@@ -1049,6 +1119,9 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "MISS");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "false");
+        assert_eq!(res.headers().get("Kache-Distance").unwrap(), "1.0000");
+        assert!(res.headers().get("Kache-Embedding-Time-Ms").is_some());
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
 
@@ -1080,6 +1153,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "MISS");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "false");
         let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -1121,6 +1195,9 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "MISS");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "false");
+        assert_eq!(res.headers().get("Kache-Distance").unwrap(), "1.0000");
+        assert!(res.headers().get("Kache-Embedding-Time-Ms").is_some());
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
 
@@ -1149,6 +1226,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("KacheDB-Cache").unwrap(), "MISS");
+        assert_eq!(res.headers().get("Kache-Hit").unwrap(), "false");
         let body_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -1269,5 +1347,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_messages_rfc6648_kache_headers_and_8k_guard() {
+        let (_, kport) = spawn_mock_kachedb(None, None).await;
+        let (_, uport) = spawn_mock_upstream_openai(false, false).await;
+        let state = make_state(kport, format!("http://127.0.0.1:{uport}/v1"));
+
+        let oversized_content = vec!["token"; 8195].join(" ");
+        let payload = AnthropicMessagesRequest {
+            model: "claude-3-5-sonnet".to_string(),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text(oversized_content),
+            }],
+            system: None,
+            max_tokens: Some(256),
+            stream: Some(false),
+            temperature: None,
+            top_p: None,
+            tools: None,
+        };
+        let err = messages_handler(State(state), HeaderMap::new(), Json(payload))
+            .await
+            .unwrap_err();
+        match err {
+            ProxyError::InvalidRequest(msg) => assert!(msg.contains("8192")),
+            other => panic!("Expected InvalidRequest, got {other:?}"),
+        }
     }
 }

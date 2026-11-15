@@ -12,10 +12,13 @@ use cache::KacheDbClient;
 use clap::Parser;
 use config::Config;
 use embed::DynEmbeddingEngine;
+use embed::gemma::GemmaOnnxEmbedder;
 use embed::local_onnx::LocalOnnxEmbedder;
 use embed::mock::MockEmbedder;
+use embed::resolver::{ModelResolutionConfig, resolve_model_paths};
 use state::AppState;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use telemetry::{TelemetryTracker, generate_ascii_report};
 use tracing::info;
@@ -65,8 +68,8 @@ pub fn log_startup_info(config: &Config, addr: &SocketAddr) {
         config.kachedb_host, config.kachedb_port
     );
     info!(
-        "🎯 Semantic threshold: {:.2} | TTL: {}s",
-        config.similarity_threshold, config.ttl_seconds
+        "🎯 Semantic threshold: {:.2} | TTL: {}s | Dim: {}",
+        config.similarity_threshold, config.ttl_seconds, config.embedding_dim
     );
 }
 
@@ -84,10 +87,43 @@ pub fn spawn_sigusr1_listener(telemetry: Arc<TelemetryTracker>) -> tokio::task::
     })
 }
 
+fn is_embeddinggemma_model(model_name: &str) -> bool {
+    matches!(
+        model_name.trim().to_ascii_lowercase().as_str(),
+        "embeddinggemma-2" | "embeddinggemma" | "gemma-2" | "embeddinggemma-300m"
+    )
+}
+
 pub fn setup_app_state(config: &Config) -> AppState {
+    let target_dim = config.validate_embedding_dim().unwrap_or(384);
+
     let embedder: DynEmbeddingEngine = if config.mock_embedder {
-        info!("🧪 Initialized MockEmbedder (deterministic hashing mode)");
-        Arc::new(MockEmbedder::default())
+        info!(
+            "🧪 Initialized MockEmbedder (deterministic hashing mode, dim={})",
+            target_dim
+        );
+        Arc::new(MockEmbedder::new(target_dim))
+    } else if is_embeddinggemma_model(&config.embedding_model) {
+        info!(
+            "🧠 Initializing EmbeddingGemma 2 ONNX engine '{}' (dim={})...",
+            config.embedding_model, target_dim
+        );
+        let resolution_cfg = ModelResolutionConfig::new(
+            config.model_path.clone(),
+            std::env::var("EMBEDDING_MODEL_PATH").ok(),
+            PathBuf::from(".fastembed_cache"),
+        );
+        match resolve_model_paths(&resolution_cfg)
+            .and_then(|resolved| GemmaOnnxEmbedder::try_from_resolved(&resolved, target_dim))
+        {
+            Ok(engine) => Arc::new(engine),
+            Err(e) => {
+                tracing::warn!(
+                    "⚠️ Could not load EmbeddingGemma 2 ONNX model ({e}). Falling back to MockEmbedder(dim={target_dim})..."
+                );
+                Arc::new(MockEmbedder::new(target_dim))
+            }
+        }
     } else {
         info!(
             "🧠 Initializing local ONNX embedder '{}'...",
@@ -97,9 +133,9 @@ pub fn setup_app_state(config: &Config) -> AppState {
             Ok(engine) => Arc::new(engine),
             Err(e) => {
                 tracing::warn!(
-                    "⚠️ Could not load local ONNX model ({e}). Falling back to MockEmbedder..."
+                    "⚠️ Could not load local ONNX model ({e}). Falling back to MockEmbedder(dim={target_dim})..."
                 );
-                Arc::new(MockEmbedder::default())
+                Arc::new(MockEmbedder::new(target_dim))
             }
         }
     };
@@ -142,7 +178,7 @@ fn print_banner(config: &Config) {
   • Upstream:         {}
   • KacheDB Daemon:   {}:{}
   • Similarity Gate:  {:.2}
-  • Embedding Model:  {}
+  • Embedding Model:  {} ({}-d)
 ════════════════════════════════════════════════════════════════════════
 "#,
         env!("CARGO_PKG_VERSION"),
@@ -151,7 +187,8 @@ fn print_banner(config: &Config) {
         config.kachedb_host,
         config.kachedb_port,
         config.similarity_threshold,
-        config.embedding_model
+        config.embedding_model,
+        config.embedding_dim
     );
 }
 
@@ -198,6 +235,7 @@ mod tests {
             ttl_seconds: 86400,
             embedding_model: "bge-small".to_string(),
             mock_embedder: true,
+            ..Config::default()
         };
         print_banner(&config);
     }
@@ -215,9 +253,33 @@ mod tests {
             ttl_seconds: 86400,
             embedding_model: "bge-small".to_string(),
             mock_embedder: true,
+            ..Config::default()
         };
         let (state, _router) = build_app(&config);
         assert_eq!(state.embedder.dimension(), 384);
+    }
+
+    #[test]
+    fn test_setup_app_state_768_dimension() {
+        let config = Config {
+            embedding_model: "embeddinggemma-2".to_string(),
+            embedding_dim: 768,
+            mock_embedder: true,
+            ..Config::default()
+        };
+        let (state, _router) = build_app(&config);
+        assert_eq!(state.embedder.dimension(), 768);
+
+        // Also test EmbeddingGemma 2 fallback path when model_path doesn't exist
+        let fallback_cfg = Config {
+            embedding_model: "embeddinggemma-2".to_string(),
+            embedding_dim: 768,
+            mock_embedder: false,
+            model_path: Some(PathBuf::from("/nonexistent/gemma2/dir")),
+            ..Config::default()
+        };
+        let fallback_state = setup_app_state(&fallback_cfg);
+        assert_eq!(fallback_state.embedder.dimension(), 768);
     }
 
     #[test]
@@ -233,6 +295,7 @@ mod tests {
             ttl_seconds: 86400,
             embedding_model: "nonexistent-model".to_string(),
             mock_embedder: false,
+            ..Config::default()
         };
         // Should trigger fallback to mock embedder
         let state = setup_app_state(&config);
@@ -252,6 +315,7 @@ mod tests {
             ttl_seconds: 86400,
             embedding_model: "bge-small".to_string(),
             mock_embedder: true,
+            ..Config::default()
         };
         let addr: SocketAddr = "127.0.0.1:6385".parse().unwrap();
         log_startup_info(&config, &addr);

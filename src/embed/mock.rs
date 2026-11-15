@@ -54,6 +54,7 @@ impl EmbeddingEngine for MockEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embed::EmbeddingTask;
 
     #[test]
     fn test_mock_embedder_dimension_and_norm() {
@@ -63,6 +64,42 @@ mod tests {
         let vec = embedder.encode("Hello, KacheDB proxy!").unwrap();
         assert_eq!(vec.len(), 384);
 
+        let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_mock_embedder_encode_with_task() {
+        let embedder = MockEmbedder::default();
+        let prompt = "sample query";
+
+        let query_vec = embedder
+            .encode_with_task(prompt, EmbeddingTask::SearchQuery)
+            .unwrap();
+        assert_eq!(query_vec.len(), 384);
+        let norm_q: f32 = query_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm_q - 1.0).abs() < 1e-5);
+
+        let doc_vec = embedder
+            .encode_with_task(prompt, EmbeddingTask::DocumentIndexing)
+            .unwrap();
+        assert_eq!(doc_vec.len(), 384);
+        let norm_d: f32 = doc_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm_d - 1.0).abs() < 1e-5);
+
+        // Different tasks prepend different prefixes, so the hashes and vectors must differ
+        assert_ne!(query_vec, doc_vec);
+    }
+
+    #[test]
+    fn test_mock_embedder_768_dimension() {
+        let embedder = MockEmbedder::new(768);
+        assert_eq!(embedder.dimension(), 768);
+
+        let vec = embedder
+            .encode_with_task("test prompt", EmbeddingTask::SearchQuery)
+            .unwrap();
+        assert_eq!(vec.len(), 768);
         let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
     }

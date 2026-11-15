@@ -25,6 +25,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 
 # Local Vector Embeddings (ONNX Runtime)
 fastembed = { version = "4.9", default-features = false, features = ["ort-download-binaries", "hf-hub-rustls-tls"] }
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.16"
 
 # Serialization & CLI
 serde = { version = "1.0", features = ["derive"] }

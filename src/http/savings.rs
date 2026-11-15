@@ -60,6 +60,7 @@ mod tests {
             ttl_seconds: 86400,
             embedding_model: "bge-small".to_string(),
             mock_embedder: true,
+            ..Config::default()
         };
         let state = AppState {
             config: Arc::new(config),

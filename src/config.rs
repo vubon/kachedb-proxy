@@ -1,6 +1,9 @@
 //! CLI and runtime configuration for kachedb-proxy.
 
+use crate::embed::task::{PREFIX_DOCUMENT_INDEXING, PREFIX_SEARCH_QUERY};
+use crate::error::ProxyError;
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -59,13 +62,62 @@ pub struct Config {
     )]
     pub ttl_seconds: u64,
 
-    /// Local on-device embedding model name
+    /// Local on-device embedding model name (e.g. "bge-small-en-v1.5" or "embeddinggemma-2")
     #[arg(long, env = "EMBEDDING_MODEL", default_value = "bge-small-en-v1.5")]
     pub embedding_model: String,
 
     /// Enable deterministic mock embedder for rapid unit testing without downloading ONNX models
     #[arg(long, env = "MOCK_EMBEDDER", default_value_t = false)]
     pub mock_embedder: bool,
+
+    /// Target Matryoshka Representation Learning (MRL) embedding dimension (384 or 768)
+    #[arg(long, env = "EMBEDDING_DIM", default_value_t = 384)]
+    pub embedding_dim: usize,
+
+    /// Explicit directory path to offline ONNX model and tokenizer artifacts
+    #[arg(long, env = "EMBEDDING_MODEL_PATH")]
+    pub model_path: Option<PathBuf>,
+
+    /// Asymmetric task prefix prepended to chat and message search queries
+    #[arg(long, env = "SEARCH_PREFIX", default_value = PREFIX_SEARCH_QUERY)]
+    pub search_prefix: String,
+
+    /// Asymmetric task prefix prepended to document indexing requests (/v1/embeddings)
+    #[arg(long, env = "INDEXING_PREFIX", default_value = PREFIX_DOCUMENT_INDEXING)]
+    pub indexing_prefix: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            port: 6385,
+            host: "0.0.0.0".to_string(),
+            upstream_url: "https://api.openai.com/v1".to_string(),
+            upstream_api_key: None,
+            kachedb_host: "127.0.0.1".to_string(),
+            kachedb_port: 6379,
+            similarity_threshold: 0.85,
+            ttl_seconds: 86400,
+            embedding_model: "bge-small-en-v1.5".to_string(),
+            mock_embedder: false,
+            embedding_dim: 384,
+            model_path: None,
+            search_prefix: PREFIX_SEARCH_QUERY.to_string(),
+            indexing_prefix: PREFIX_DOCUMENT_INDEXING.to_string(),
+        }
+    }
+}
+
+impl Config {
+    /// Validates that `embedding_dim` is a supported MRL dimension (`384` or `768`).
+    pub fn validate_embedding_dim(&self) -> Result<usize, ProxyError> {
+        match self.embedding_dim {
+            384 | 768 => Ok(self.embedding_dim),
+            other => Err(ProxyError::Embedding(format!(
+                "Unsupported embedding dimension {other}: expected 384 or 768"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -90,5 +142,47 @@ mod tests {
         assert_eq!(cfg.upstream_api_key.as_deref(), Some("sk-alias-test"));
         assert!((cfg.similarity_threshold - 0.91).abs() < f32::EPSILON);
         assert_eq!(cfg.ttl_seconds, 7200);
+        assert_eq!(cfg.embedding_dim, 384);
+        assert_eq!(cfg.search_prefix, PREFIX_SEARCH_QUERY);
+        assert_eq!(cfg.indexing_prefix, PREFIX_DOCUMENT_INDEXING);
+    }
+
+    #[test]
+    fn test_cli_embeddinggemma_flags_and_defaults() {
+        let cfg = Config::try_parse_from([
+            "kachedb-proxy",
+            "--embedding-model",
+            "embeddinggemma-2",
+            "--embedding-dim",
+            "768",
+            "--model-path",
+            "/opt/models/gemma2",
+            "--search-prefix",
+            "custom_query: ",
+            "--indexing-prefix",
+            "custom_doc: ",
+        ])
+        .unwrap();
+        assert_eq!(cfg.embedding_model, "embeddinggemma-2");
+        assert_eq!(cfg.embedding_dim, 768);
+        assert_eq!(
+            cfg.model_path.as_deref(),
+            Some(std::path::Path::new("/opt/models/gemma2"))
+        );
+        assert_eq!(cfg.search_prefix, "custom_query: ");
+        assert_eq!(cfg.indexing_prefix, "custom_doc: ");
+    }
+
+    #[test]
+    fn test_config_validate_embedding_dim() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.validate_embedding_dim().unwrap(), 384);
+
+        cfg.embedding_dim = 768;
+        assert_eq!(cfg.validate_embedding_dim().unwrap(), 768);
+
+        cfg.embedding_dim = 512;
+        let err = cfg.validate_embedding_dim().unwrap_err();
+        assert!(err.to_string().contains("512"));
     }
 }
