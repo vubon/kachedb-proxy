@@ -1,6 +1,6 @@
 [package]
 name = "kachedb-proxy"
-version = "0.1.0-alpha"
+version = "0.2.0-alpha"
 edition = "2024"
 authors = ["Vubon Roy <vubon.roy@gmail.com>"]
 description = "High-performance OpenAI and Anthropic compatible semantic reverse proxy powered by KacheDB SIMD vector cache"

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0-alpha] - 2026-11-15
+
+### 🚀 Added
+- **Google EmbeddingGemma 2 Inference Engine**:
+  - Direct local ONNX Runtime inference engine using `ort 2.0.0-rc.9`, `tokenizers 0.21`, and `ndarray 0.16`.
+  - Lock-free concurrent session execution with bounded concurrency permits.
+  - Automatic download and caching of model weights (`model.onnx`, `tokenizer.json`) to `.fastembed_cache/embeddinggemma-2-onnx`.
+- **Matryoshka Representation Learning (MRL) Truncation**:
+  - Support for 384-dimensional truncated embeddings with L2 re-normalization alongside native 768-dimensional embeddings.
+  - Configurable via `--embedding-dim 384` or `--embedding-dim 768`.
+- **Task-Aware Prompt Formatting**:
+  - Automatically prefixes input text with Gemma task prompts (`task: search result | query: ...`) based on routing context (`RetrievalQuery`, `RetrievalDocument`, `SemanticSimilarity`, `Classification`, `Clustering`).
+- **Dual-Engine Model Architecture**:
+  - CLI and environment flag `--embedding-model` (`bge-small-en-v1.5` default, `embeddinggemma-2`).
+  - Graceful fallback preserves 100% backward compatibility for existing deployments.
+- **8,192-Token Sequence Guard**:
+  - Strictly enforces the 8,192 token context window limit before model execution, rejecting oversized inputs with `HTTP 400 Bad Request` across `/v1/chat/completions`, `/v1/messages`, and `/v1/embeddings`.
+
+---
+
 ## [0.1.0-alpha] - 2026-11-08
 
 ### 🚀 Added
