@@ -1,7 +1,7 @@
 # ⚡ KacheDB AI Semantic Reverse Proxy (`kachedb-proxy`)
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Version](https://img.shields.io/badge/version-0.1.0--alpha-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.2.0--alpha-green.svg)](Cargo.toml)
 [![Coverage](https://img.shields.io/badge/coverage-95.19%25-brightgreen.svg)](target/llvm-cov/html/index.html)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 
@@ -119,6 +119,74 @@ Content-Type: application/json
 
 ---
 
+## 🧠 Embedding Models & Setup Guide
+
+`kachedb-proxy` features a dual-engine vector embedding architecture:
+
+| Engine | Context Window | Native Dim | Supported MRL Dims | Weight Download | Use Case |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`bge-small-en-v1.5`** *(Default)* | 512 tokens | 384 | 384 | ✅ Auto-download (Hugging Face) | Ultra-lean local dev, short queries |
+| **`embeddinggemma-2`** | **8,192 tokens** | 768 | **384**, 768 | 📁 Mounted Volume / Offline | Long prompts, multi-turn agents, system prompts |
+
+---
+
+### Option A: Default Engine (`bge-small`) — Zero Setup
+
+By default, no model setup is required. On the first request, `fastembed` automatically fetches the lightweight (~127 MB) BGE-small ONNX model into `/app/.fastembed_cache`:
+```bash
+# Starts instantly with default bge-small
+docker run -d --name kachedb-proxy -p 6385:6385 ghcr.io/vubon/kachedb-proxy:latest
+```
+
+---
+
+### Option B: Google EmbeddingGemma 2 (8K Context + MRL)
+
+EmbeddingGemma 2 provides **16x larger context window** (8,192 tokens) and supports **Matryoshka Representation Learning (MRL)** truncation to 384 dimensions (matching existing KacheDB index schemas without schema migrations).
+
+#### 1. Download Model Artifacts
+Download the ONNX computation graph and tokenizer into a local folder:
+```bash
+mkdir -p models/embeddinggemma-2
+
+# Download ONNX model, external weights, and tokenizer
+curl -L "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_no_gather_q4.onnx" \
+  -o models/embeddinggemma-2/model.onnx
+
+curl -L "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_no_gather_q4.onnx_data" \
+  -o models/embeddinggemma-2/model_no_gather_q4.onnx_data
+
+curl -L "https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/tokenizer.json" \
+  -o models/embeddinggemma-2/tokenizer.json
+```
+
+#### 2. Run with Docker
+Mount the model directory to `/models:ro` and pass `--embedding-model embeddinggemma-2`:
+```bash
+docker run -d --name kachedb-proxy \
+  --restart unless-stopped \
+  -p 6385:6385 \
+  -v $(pwd)/models/embeddinggemma-2:/models:ro \
+  ghcr.io/vubon/kachedb-proxy:latest \
+  --port 6385 \
+  --kachedb-host host.docker.internal \
+  --kachedb-port 6380 \
+  --upstream-url http://host.docker.internal:8080/v1 \
+  --embedding-model embeddinggemma-2 \
+  --model-path /models \
+  --embedding-dim 384
+```
+
+#### 3. Run from Source / Binary
+```bash
+cargo run --release -- \
+  --embedding-model embeddinggemma-2 \
+  --model-path ./models/embeddinggemma-2 \
+  --embedding-dim 384
+```
+
+---
+
 ## 🔌 IDE & Framework Integrations
 
 ### 1. Cursor IDE
@@ -231,7 +299,7 @@ response = litellm.completion(
 | :--- | :--- |
 | `make build` | Compile debug binary |
 | `make release` | Compile optimized production release binary |
-| `make test` / `make test-unit` | Run all 61 Rust unit tests |
+| `make test` / `make test-unit` | Run all 189 Rust unit tests |
 | `make test-e2e` | Run Python E2E integration test suite against local `llama.cpp` |
 | `make coverage` | Terminal code coverage breakdown via `cargo llvm-cov` |
 | `make coverage-html` | Generate interactive HTML coverage report at `target/llvm-cov/html/index.html` |
@@ -254,7 +322,11 @@ response = litellm.completion(
 | `--kachedb-port` | `KACHEDB_PORT` | `6379` | KacheDB server port |
 | `-t, --similarity-threshold` (`--threshold`) | `SIMILARITY_THRESHOLD`| `0.85` | Cosine similarity threshold for semantic hits (0.0–1.0) |
 | `--ttl-seconds` (`--ttl`) | `CACHE_TTL_SECONDS` | `86400` | Expiration time for cached responses in seconds (24h) |
-| `--embedding-model` | `EMBEDDING_MODEL` | `bge-small-en-v1.5` | Local ONNX embedding model |
+| `--embedding-model` | `EMBEDDING_MODEL` | `bge-small-en-v1.5` | Local ONNX embedding model (`bge-small-en-v1.5` or `embeddinggemma-2`) |
+| `--embedding-dim` | `EMBEDDING_DIM` | `384` | Matryoshka Representation Learning (MRL) dimension (`384` or `768`) |
+| `--model-path` | `EMBEDDING_MODEL_PATH` | None | Directory path to offline ONNX model & tokenizer artifacts |
+| `--search-prefix` | `SEARCH_PREFIX` | `"task: search query \| text: "` | Task prefix prepended to chat/message queries |
+| `--indexing-prefix` | `INDEXING_PREFIX` | `"task: document indexing \| text: "` | Task prefix prepended to document embeddings |
 | `--mock-embedder` | `MOCK_EMBEDDER` | `false` | Deterministic hashing embedder for testing |
 
 ### Per-Request HTTP Headers
